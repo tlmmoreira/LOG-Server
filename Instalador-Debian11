@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# Amoreiratech IPFIX Flow Collector
+# Amoreiratech IPFIX Flow Collector - Debian 11 V2
 # Debian 11 - nfdump/nfcapd
 #
 # Recebe Traffic Flow via IPFIX/NetFlow em UDP e grava em formato binario nfdump.
@@ -60,19 +60,89 @@ check_debian() {
     fi
 }
 
-install_packages() {
-    info "Atualizando repositorios..."
-    apt-get update
 
-    info "Instalando nfdump e utilitarios..."
+check_time_and_ntp() {
+    info "Validando data, hora e sincronizacao NTP..."
+
+    if command -v timedatectl >/dev/null 2>&1; then
+        timedatectl set-ntp true >/dev/null 2>&1 || true
+        sleep 1
+
+        CURRENT_TIME="$(date '+%Y-%m-%d %H:%M:%S %z')"
+        info "Data/hora atual: ${CURRENT_TIME}"
+
+        if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qi '^yes$'; then
+            info "Relogio sincronizado via NTP."
+        else
+            warn "NTP ainda nao aparece como sincronizado. O APT sera testado antes de prosseguir."
+        fi
+    else
+        warn "timedatectl nao encontrado. Continuando com a hora atual: $(date)"
+    fi
+}
+
+backup_sources_list() {
+    if [ -f /etc/apt/sources.list ]; then
+        cp -a /etc/apt/sources.list "/etc/apt/sources.list.backup-ipfix-$(date +%Y%m%d-%H%M%S)"
+    fi
+}
+
+fix_bullseye_security_if_expired() {
+    info "Testando repositorios APT do Debian 11..."
+
+    TMP_APT_LOG="$(mktemp)"
+
+    if apt-get update 2>&1 | tee "$TMP_APT_LOG"; then
+        rm -f "$TMP_APT_LOG"
+        return 0
+    fi
+
+    if grep -Eqi 'bullseye-security.*(expir|expired|Release file.*expired|InRelease.*expired)' "$TMP_APT_LOG"; then
+        warn "Repositorio bullseye-security com metadata expirada detectado."
+        warn "O instalador ira comentar apenas as entradas bullseye-security e manter os demais repositorios."
+        backup_sources_list
+
+        if [ -f /etc/apt/sources.list ]; then
+            sed -i -E \
+                '/^[[:space:]]*deb(-src)?[[:space:]]+https?:\/\/security\.debian\.org\/debian-security[[:space:]]+bullseye-security[[:space:]]/ s/^/# DESABILITADO-IPFIX: /' \
+                /etc/apt/sources.list
+        fi
+
+        apt-get clean
+        rm -rf /var/lib/apt/lists/*
+
+        info "Executando apt-get update novamente..."
+        apt-get update
+
+        rm -f "$TMP_APT_LOG"
+        return 0
+    fi
+
+    cat "$TMP_APT_LOG" >&2
+    rm -f "$TMP_APT_LOG"
+    die "apt-get update falhou por um motivo diferente de bullseye-security expirado."
+}
+
+install_packages() {
+    check_time_and_ntp
+    fix_bullseye_security_if_expired
+
+    info "Instalando nfdump/nfcapd e dependencias..."
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         nfdump \
+        cron \
         nftables \
         iproute2 \
         procps \
         coreutils \
         findutils \
-        util-linux
+        util-linux \
+        tcpdump
+
+    command -v nfcapd >/dev/null 2>&1 || die "nfcapd nao foi encontrado apos a instalacao."
+    command -v nfdump >/dev/null 2>&1 || die "nfdump nao foi encontrado apos a instalacao."
+
+    systemctl enable --now cron >/dev/null 2>&1 || true
 }
 
 create_user_and_dirs() {
