@@ -1,10 +1,15 @@
-# LOG-Server
-
 # Amoreiratech IPFIX Flow Collector
 
 Servidor de coleta de **Traffic Flow via IPFIX** para equipamentos de rede, com foco inicial em MikroTik RouterOS v7.
 
-## Arquitetura
+Este README atende aos dois instaladores:
+
+- `instalar_ipfix_amoreiratech.sh` — Debian 11
+- `instalar_ipfix_amoreiratech_debian12.sh` — Debian 12
+
+---
+
+## 1. Arquitetura
 
 ```text
 MikroTik / Equipamento de Rede
@@ -13,7 +18,7 @@ MikroTik / Equipamento de Rede
           | UDP 2055
           v
 +-----------------------------+
-| Debian 11                   |
+| Debian 11 ou Debian 12      |
 | nfcapd / nfdump             |
 +-------------+---------------+
               |
@@ -28,42 +33,67 @@ MikroTik / Equipamento de Rede
                                     +-- nfcapd.*
 ```
 
-O servidor **não utiliza rsyslog para registrar tráfego**. O objetivo é receber registros estruturados de fluxo através de IPFIX.
+O projeto utiliza **IPFIX para coleta de fluxos**. Não utiliza rsyslog para registrar o tráfego.
 
 ---
 
-## Configuração padrão
+## 2. Configuração padrão
 
-| Item | Configuração |
-|---|---|
-| Sistema operacional | Debian 11 |
-| Collector | nfcapd |
-| Ferramenta de consulta | nfdump |
-| Protocolo | IPFIX |
-| Transporte | UDP |
-| Porta | 2055 |
-| Diretório | `/var/lib/ipfix` |
-| Rotação | 5 minutos |
-| Compressão | LZO |
-| Retenção local | 7 dias |
-| Warning de disco | 80% |
-| Limpeza automática | 85% |
-| Meta após limpeza | 78% |
-| Nível crítico | 92% |
+| Item | Debian 11 | Debian 12 |
+|---|---|---|
+| Collector | nfcapd | nfcapd |
+| Consulta | nfdump | nfdump |
+| Protocolo | IPFIX | IPFIX |
+| Transporte | UDP | UDP |
+| Porta | 2055 | 2055 |
+| Diretório | `/var/lib/ipfix` | `/var/lib/ipfix` |
+| Rotação | 5 minutos | 5 minutos |
+| Compressão | LZO | LZO |
+| Retenção local | 7 dias | 7 dias |
+| Warning de disco | 80% | 80% |
+| Limpeza automática | 85% | 85% |
+| Meta após limpeza | 78% | 78% |
+| Nível crítico | 92% | 92% |
 
-Os valores podem ser alterados no início do instalador antes da execução.
+Os valores podem ser alterados nas variáveis do início do respectivo instalador antes da execução.
 
 ---
 
-# 1. Instalação
+# 3. Escolha do instalador
 
-Copie o arquivo:
+Confira a versão:
+
+```bash
+cat /etc/debian_version
+```
+
+ou:
+
+```bash
+cat /etc/os-release
+```
+
+### Debian 11
+
+Use:
 
 ```bash
 instalar_ipfix_amoreiratech.sh
 ```
 
-para o Debian 11.
+### Debian 12
+
+Use:
+
+```bash
+instalar_ipfix_amoreiratech_debian12.sh
+```
+
+Não é necessário executar os dois scripts.
+
+---
+
+# 4. Instalação — Debian 11
 
 Dê permissão:
 
@@ -83,22 +113,51 @@ Execute:
 ./instalar_ipfix_amoreiratech.sh
 ```
 
-O instalador irá:
+---
 
-1. instalar `nfdump/nfcapd`;
-2. criar o usuário de serviço `ipfix`;
-3. criar `/var/lib/ipfix`;
-4. configurar buffers UDP do Linux;
-5. criar o serviço `ipfix-collector`;
-6. habilitar inicialização automática;
-7. configurar rotação dos arquivos;
-8. configurar retenção;
-9. instalar proteção contra disco cheio;
-10. criar comandos de diagnóstico.
+# 5. Instalação — Debian 12
+
+Dê permissão:
+
+```bash
+chmod +x instalar_ipfix_amoreiratech_debian12.sh
+```
+
+Entre como root:
+
+```bash
+su -
+```
+
+Execute:
+
+```bash
+./instalar_ipfix_amoreiratech_debian12.sh
+```
 
 ---
 
-# 2. Verificar o collector
+# 6. O que o instalador configura
+
+O instalador correspondente à versão do Debian:
+
+1. instala `nfdump/nfcapd`;
+2. cria o usuário de serviço `ipfix`;
+3. cria `/var/lib/ipfix`;
+4. configura buffers UDP do Linux;
+5. cria o serviço `ipfix-collector`;
+6. habilita inicialização automática;
+7. configura rotação dos flow-files;
+8. configura retenção local;
+9. instala proteção contra disco cheio;
+10. cria comandos de diagnóstico;
+11. valida a inicialização do collector.
+
+O instalador do Debian 12 também instala `tcpdump` explicitamente para facilitar a validação da chegada dos datagramas IPFIX.
+
+---
+
+# 7. Verificar o collector
 
 Execute:
 
@@ -112,31 +171,19 @@ O serviço deve aparecer como:
 active (running)
 ```
 
-Também deverá existir um socket UDP na porta:
-
-```text
-2055
-```
-
-Verificação manual:
+Validação manual:
 
 ```bash
 systemctl status ipfix-collector
 ```
 
-Porta:
+Verifique a porta:
 
 ```bash
 ss -lunp | grep 2055
 ```
 
-Logs do serviço:
-
-```bash
-journalctl -u ipfix-collector
-```
-
-Acompanhamento em tempo real:
+Acompanhe o serviço:
 
 ```bash
 journalctl -u ipfix-collector -f
@@ -144,9 +191,9 @@ journalctl -u ipfix-collector -f
 
 ---
 
-# 3. Configuração MikroTik RouterOS v7
+# 8. Configuração MikroTik RouterOS v7
 
-Substitua `IP_DO_SERVIDOR` pelo endereço IP do Debian.
+Substitua `IP_DO_SERVIDOR` pelo IP real do collector.
 
 Habilite Traffic Flow:
 
@@ -168,17 +215,27 @@ Confira:
 /ip traffic-flow print
 ```
 
-E:
+e:
 
 ```routeros
 /ip traffic-flow target print detail
 ```
 
-> Antes de colocar em produção em uma CCR com muito tráfego, recomenda-se revisar interfaces monitoradas, timeouts e eventual sampling.
+## Recomendação
+
+Antes de habilitar em uma CCR de produção com grande volume de tráfego, revise:
+
+- interfaces monitoradas;
+- active-flow-timeout;
+- inactive-flow-timeout;
+- sampling, quando aplicável;
+- CPU da CCR;
+- quantidade de flows por segundo;
+- capacidade do collector.
 
 ---
 
-# 4. Confirmar chegada dos pacotes IPFIX
+# 9. Confirmar chegada dos pacotes IPFIX
 
 No Debian:
 
@@ -186,25 +243,26 @@ No Debian:
 tcpdump -ni any udp port 2055
 ```
 
-Se o MikroTik estiver enviando corretamente, deverão aparecer pacotes UDP chegando ao servidor.
+Se `tcpdump` não estiver instalado no Debian 11:
+
+```bash
+apt update
+apt install tcpdump
+```
+
+Você deverá observar pacotes UDP do roteador chegando ao collector.
 
 Exemplo conceitual:
 
 ```text
-IP 172.30.0.1.49123 > SERVIDOR.2055: UDP
+IP 172.30.0.1.49123 > IP_DO_SERVIDOR.2055: UDP
 ```
 
-Se não aparecer nada, verifique:
-
-- IP configurado no MikroTik;
-- rota entre MikroTik e collector;
-- firewall;
-- porta UDP 2055;
-- configuração do Traffic Flow.
+Se os pacotes chegam, mas os flow-files não são criados, investigue o `nfcapd`.
 
 ---
 
-# 5. Estrutura dos arquivos
+# 10. Estrutura de armazenamento
 
 Os registros ficam em:
 
@@ -212,7 +270,7 @@ Os registros ficam em:
 /var/lib/ipfix/
 ```
 
-O collector separa os exportadores e organiza os arquivos por data.
+O collector separa os exportadores e organiza os flow-files por data.
 
 Exemplo:
 
@@ -229,13 +287,26 @@ Exemplo:
                     └── nfcapd.202609111315
 ```
 
-Cada arquivo representa aproximadamente **5 minutos de coleta**.
+A rotação padrão é:
+
+```text
+5 minutos
+```
+
+Assim, em condições normais, cada exportador poderá gerar aproximadamente:
+
+```text
+12 arquivos/hora
+288 arquivos/dia
+```
+
+A quantidade real depende do comportamento da versão do collector e dos exportadores ativos.
 
 ---
 
-# 6. Consultar os últimos flows
+# 11. Consultar os últimos flows
 
-Foi criado:
+Foi criado o comando:
 
 ```bash
 ipfix-last
@@ -247,9 +318,9 @@ Por padrão:
 ipfix-last
 ```
 
-mostra até 50 registros do flow-file fechado mais recente.
+exibe até 50 registros do flow-file fechado mais recente.
 
-Para solicitar 100:
+Para 100:
 
 ```bash
 ipfix-last 100
@@ -257,15 +328,15 @@ ipfix-last 100
 
 ---
 
-# 7. Consultar diretamente com nfdump
+# 12. Consulta manual com nfdump
 
-Localize um arquivo:
+Localize os arquivos:
 
 ```bash
-find /var/lib/ipfix -type f -name 'nfcapd.*' | tail
+find /var/lib/ipfix -type f -name 'nfcapd.*' ! -name 'nfcapd.current*' | tail
 ```
 
-Depois:
+Leia um arquivo:
 
 ```bash
 nfdump -r /caminho/do/nfcapd.202609111300
@@ -279,9 +350,9 @@ nfdump -r /caminho/do/arquivo -o extended
 
 ---
 
-# 8. Filtrar um IP
+# 13. Filtrar por IP
 
-Exemplo:
+Qualquer ocorrência do IP:
 
 ```bash
 nfdump -r /caminho/do/arquivo 'host 100.64.10.20'
@@ -301,7 +372,7 @@ nfdump -r /caminho/do/arquivo 'dst ip 8.8.8.8'
 
 ---
 
-# 9. Filtrar portas e protocolos
+# 14. Filtrar portas e protocolos
 
 Porta 443:
 
@@ -329,7 +400,7 @@ nfdump -r /caminho/do/arquivo 'src ip 100.64.10.20 and proto tcp'
 
 ---
 
-# 10. Top Talkers
+# 15. Top Talkers
 
 Por IP de origem:
 
@@ -337,55 +408,64 @@ Por IP de origem:
 nfdump -r /caminho/do/arquivo -s srcip/bytes -n 20
 ```
 
-Por IP de destino:
+Por destino:
 
 ```bash
 nfdump -r /caminho/do/arquivo -s dstip/bytes -n 20
 ```
 
-Isso ajuda a identificar os IPs que mais geraram tráfego no período armazenado naquele arquivo.
+Isso permite identificar rapidamente os maiores consumidores dentro do intervalo do flow-file consultado.
 
 ---
 
-# 11. Proteção contra disco cheio
+# 16. Proteção contra disco cheio
 
-O servidor executa:
+O servidor possui:
 
 ```bash
 /usr/local/sbin/ipfix-cleanup
 ```
 
-automaticamente a cada 15 minutos.
+A rotina é executada automaticamente pelo cron.
 
-Política padrão:
+Configuração padrão:
 
 ```text
-< 80%     NORMAL
+< 80%
+NORMAL
 
->= 80%    WARNING
+>= 80%
+WARNING
 
->= 85%    remove os flow-files fechados
-           mais antigos até o filesystem
-           voltar aproximadamente para 78%
+>= 85%
+Remove flow-files fechados mais antigos
+até o filesystem chegar aproximadamente a 78%
 
->= 92%    CRITICAL
+>= 92%
+CRITICAL
 ```
 
-Além disso, a retenção normal é:
+A retenção normal é:
 
 ```text
 7 dias
 ```
 
-Arquivos ativos `nfcapd.current*` são explicitamente protegidos contra a rotina de limpeza.
+Arquivos ativos:
 
-Para executar manualmente:
+```text
+nfcapd.current*
+```
+
+são explicitamente excluídos da rotina de limpeza.
+
+Execução manual:
 
 ```bash
 /usr/local/sbin/ipfix-cleanup
 ```
 
-Logs da rotina:
+Logs:
 
 ```bash
 journalctl -t IPFIX-CLEANUP
@@ -393,7 +473,7 @@ journalctl -t IPFIX-CLEANUP
 
 ---
 
-# 12. Espaço utilizado
+# 17. Verificar armazenamento
 
 Filesystem:
 
@@ -401,7 +481,7 @@ Filesystem:
 df -h /var/lib/ipfix
 ```
 
-Tamanho total:
+Total de flows:
 
 ```bash
 du -sh /var/lib/ipfix
@@ -419,9 +499,15 @@ Maiores arquivos:
 find /var/lib/ipfix -type f -printf '%s %p\n' | sort -nr | head -20
 ```
 
+Quantidade de flow-files:
+
+```bash
+find /var/lib/ipfix -type f -name 'nfcapd.*' ! -name 'nfcapd.current*' | wc -l
+```
+
 ---
 
-# 13. Troubleshooting
+# 18. Troubleshooting
 
 ## Serviço não inicia
 
@@ -435,7 +521,7 @@ Depois:
 journalctl -u ipfix-collector -n 100 --no-pager
 ```
 
-## Porta 2055 não aparece
+## Porta UDP 2055 não aparece
 
 ```bash
 ss -lunp | grep 2055
@@ -447,79 +533,109 @@ Reinicie:
 systemctl restart ipfix-collector
 ```
 
-## MikroTik envia, mas não aparecem flows
-
-Primeiro confirme os pacotes:
+## Não chegam pacotes
 
 ```bash
 tcpdump -ni any udp port 2055
 ```
 
-Depois acompanhe:
+Se não aparecer tráfego, verifique:
+
+```text
+MikroTik
+   |
+   | rota / ACL / firewall
+   |
+   v
+Debian:2055/UDP
+```
+
+Confira no MikroTik:
+
+```routeros
+/ip traffic-flow print
+/ip traffic-flow target print detail
+```
+
+## Pacotes chegam, mas não existem flow-files
+
+Acompanhe:
 
 ```bash
 journalctl -u ipfix-collector -f
 ```
 
-Confira o diretório:
+Depois:
 
 ```bash
 find /var/lib/ipfix -type f | tail -20
 ```
 
-## Ver configuração do serviço
+Verifique o serviço:
 
 ```bash
 systemctl cat ipfix-collector
 ```
 
+## Reiniciar collector
+
+```bash
+systemctl restart ipfix-collector
+```
+
 ---
 
-# 14. Segurança
+# 19. Segurança
 
-A porta:
+Não exponha indiscriminadamente:
 
 ```text
 UDP/2055
 ```
 
-não deve ficar exposta indiscriminadamente à Internet.
+à Internet.
 
-O ideal é permitir somente os endereços dos roteadores/exportadores autorizados.
-
-Exemplo conceitual:
+O ideal é permitir somente os endereços dos exportadores autorizados:
 
 ```text
-CCR/BNG -------- UDP/2055 --------> IPFIX Collector
+CCR-01 -----\
+CCR-02 ------> UDP/2055 ---> IPFIX COLLECTOR
+CCR-03 -----/
 ```
 
-Se os equipamentos estiverem em redes distintas, utilize rede de gerência, VPN ou ACL/firewall apropriado.
+Prefira:
+
+- rede de gerência;
+- VLAN de infraestrutura;
+- ACL;
+- firewall;
+- VPN quando o exportador estiver fora da rede administrativa.
 
 ---
 
-# 15. Reinicialização
+# 20. Reinicialização do servidor
 
-O serviço está habilitado para iniciar automaticamente junto com o Debian.
+O collector é habilitado no boot.
 
-Verifique:
+Confira:
 
 ```bash
 systemctl is-enabled ipfix-collector
 ```
 
-Resultado esperado:
+Esperado:
 
 ```text
 enabled
 ```
 
-Teste:
+Depois de um reboot:
 
 ```bash
 reboot
 ```
 
-Após retornar:
+valide:
 
 ```bash
 ipfix-status
@@ -527,14 +643,17 @@ ipfix-status
 
 ---
 
-# 16. Comandos rápidos
+# 21. Comandos rápidos
 
 ```bash
-# Status geral
+# Status
 ipfix-status
 
-# Últimos flows
+# Últimos 50 flows
 ipfix-last
+
+# Últimos 100
+ipfix-last 100
 
 # Serviço
 systemctl status ipfix-collector
@@ -545,27 +664,63 @@ systemctl restart ipfix-collector
 # Porta
 ss -lunp | grep 2055
 
-# Pacotes chegando
+# Pacotes IPFIX chegando
 tcpdump -ni any udp port 2055
 
-# Logs
+# Logs do collector
 journalctl -u ipfix-collector -f
 
-# Uso de disco
+# Uso do filesystem
 df -h /var/lib/ipfix
+
+# Espaço dos flows
 du -sh /var/lib/ipfix
+
+# Espaço por exportador
+du -sh /var/lib/ipfix/*
 
 # Limpeza manual
 /usr/local/sbin/ipfix-cleanup
+
+# Log da proteção de disco
+journalctl -t IPFIX-CLEANUP
 ```
 
 ---
 
-# Próxima etapa recomendada
+# 22. Validação recomendada após implantação
 
-Depois de colocar um MikroTik em produção, deixe o collector receber tráfego durante **24 horas**.
+Comece com **uma CCR**.
 
-Depois execute:
+### Etapa 1 — Collector
+
+```bash
+ipfix-status
+```
+
+### Etapa 2 — Pacotes
+
+```bash
+tcpdump -ni any udp port 2055
+```
+
+### Etapa 3 — Arquivos
+
+Depois de pelo menos 5 a 10 minutos:
+
+```bash
+find /var/lib/ipfix -type f | tail -20
+```
+
+### Etapa 4 — Conteúdo
+
+```bash
+ipfix-last 100
+```
+
+### Etapa 5 — Armazenamento
+
+Após aproximadamente 24 horas:
 
 ```bash
 du -sh /var/lib/ipfix
@@ -577,21 +732,94 @@ e:
 du -sh /var/lib/ipfix/*
 ```
 
-Com esses valores será possível calcular:
+Com a medição de 24 horas é possível calcular de forma realista:
 
-- GB/dia por CCR;
-- GB/mês;
-- retenção possível no disco atual;
-- capacidade necessária para vários roteadores;
-- política adequada de backup externo;
-- capacidade necessária no Google Drive.
-
-Somente depois dessa medição é recomendável definir a retenção definitiva e o processo de backup.
+```text
+GB/dia por CCR
+GB/mês por CCR
+flows por período
+retenção possível
+quantidade de CCRs suportadas
+capacidade de disco necessária
+necessidade de backup externo
+```
 
 ---
 
-**Projeto:** Amoreiratech IPFIX Flow Collector  
-**Plataforma:** Debian 11  
-**Collector:** nfcapd / nfdump  
+# 23. Google Drive / backup externo
+
+O backup para Google Drive **não está habilitado nestas versões dos instaladores**.
+
+A recomendação é primeiro medir o volume real de IPFIX durante 24 horas. Depois disso, o projeto pode receber uma segunda etapa:
+
+```text
+nfcapd
+   |
+   v
+flow-file fechado
+   |
+   +--> armazenamento local curto
+   |
+   +--> backup externo
+             |
+             v
+        Google Drive
+```
+
+A política de exclusão local deve ser implementada somente depois da confirmação do upload remoto.
+
+---
+
+# 24. Observação importante sobre IPFIX e CGNAT
+
+Traffic Flow/IPFIX é excelente para telemetria de fluxos:
+
+- IP origem;
+- IP destino;
+- portas;
+- protocolo;
+- bytes;
+- pacotes;
+- duração;
+- análise de tráfego;
+- Top Talkers.
+
+Entretanto, **não presuma que o Traffic Flow do equipamento exporta automaticamente todos os dados necessários para reconstruir uma tradução CGNAT**.
+
+Antes de substituir qualquer mecanismo existente de registro de CGNAT, valide nos registros recebidos se estão presentes os campos necessários para a sua finalidade.
+
+---
+
+# 25. Arquivos do projeto
+
+### Debian 11
+
+```text
+instalar_ipfix_amoreiratech.sh
+```
+
+### Debian 12
+
+```text
+instalar_ipfix_amoreiratech_debian12.sh
+```
+
+### README comum
+
+```text
+README_IPFIX_Amoreiratech_Debian11_Debian12.md
+```
+
+---
+
+## Projeto
+
+**Nome:** Amoreiratech IPFIX Flow Collector  
+**Sistemas:** Debian 11 / Debian 12  
+**Collector:** nfcapd  
+**Consulta:** nfdump  
 **Protocolo:** IPFIX  
-**Porta padrão:** UDP/2055
+**Porta padrão:** UDP/2055  
+**Armazenamento:** `/var/lib/ipfix`  
+**Rotação padrão:** 5 minutos  
+**Retenção padrão:** 7 dias
