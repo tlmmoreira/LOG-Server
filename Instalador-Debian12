@@ -1,0 +1,430 @@
+#!/bin/bash
+# ==============================================================================
+# Amoreiratech IPFIX Flow Collector - Debian 12
+# Debian 12 (Bookworm) + nfdump/nfcapd
+#
+# Recebe Traffic Flow via IPFIX/NetFlow em UDP e grava em formato binario nfdump.
+# Foco: collector leve, rotacao frequente e protecao contra disco cheio.
+# ==============================================================================
+
+set -euo pipefail
+
+# ------------------------------------------------------------------------------
+# CONFIGURACAO
+# ------------------------------------------------------------------------------
+
+IPFIX_PORT="2055"
+BIND_IP="0.0.0.0"
+
+FLOW_DIR="/var/lib/ipfix"
+SERVICE_USER="ipfix"
+SERVICE_GROUP="ipfix"
+
+# Rotacao dos arquivos de fluxo
+ROTATE_SECONDS="300"
+
+# Hierarquia de diretorios
+SUBDIR_LEVEL="2"
+
+# Buffer UDP do collector
+SOCKET_BUFFER="16777216"
+
+# Retencao local
+RETENTION_DAYS="7"
+
+# Protecao de disco
+DISK_WARNING="80"
+DISK_CLEAN="85"
+DISK_TARGET="78"
+DISK_CRITICAL="92"
+
+# Frequencia da limpeza
+CLEANUP_CRON="*/15 * * * *"
+
+# ------------------------------------------------------------------------------
+# FUNCOES
+# ------------------------------------------------------------------------------
+
+info() { echo "[INFO] $*"; }
+warn() { echo "[AVISO] $*" >&2; }
+die()  { echo "[ERRO] $*" >&2; exit 1; }
+
+require_root() {
+    [ "$(id -u)" -eq 0 ] || die "Execute este instalador como root."
+}
+
+check_os() {
+    [ -f /etc/os-release ] || die "/etc/os-release nao encontrado."
+
+    . /etc/os-release
+
+    info "Sistema detectado: ${PRETTY_NAME:-Linux}"
+
+    if [ "${ID:-}" != "debian" ]; then
+        die "Este instalador foi preparado para Debian 12."
+    fi
+
+    if [ "${VERSION_ID:-}" != "12" ]; then
+        warn "Versao detectada: ${VERSION_ID:-desconhecida}. O script foi preparado para Debian 12."
+    fi
+}
+
+install_packages() {
+    info "Atualizando indice de pacotes..."
+    apt-get update
+
+    info "Instalando nfdump/nfcapd e dependencias..."
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        nfdump \
+        cron \
+        nftables \
+        iproute2 \
+        procps \
+        coreutils \
+        findutils \
+        util-linux \
+        tcpdump
+
+    command -v nfcapd >/dev/null 2>&1 || die "nfcapd nao foi encontrado apos a instalacao."
+    command -v nfdump >/dev/null 2>&1 || die "nfdump nao foi encontrado apos a instalacao."
+
+    systemctl enable --now cron >/dev/null 2>&1 || true
+}
+
+create_user_and_dirs() {
+    info "Criando usuario e diretorios..."
+
+    if ! getent group "$SERVICE_GROUP" >/dev/null 2>&1; then
+        groupadd --system "$SERVICE_GROUP"
+    fi
+
+    if ! id "$SERVICE_USER" >/dev/null 2>&1; then
+        useradd \
+            --system \
+            --gid "$SERVICE_GROUP" \
+            --home-dir "$FLOW_DIR" \
+            --shell /usr/sbin/nologin \
+            "$SERVICE_USER"
+    fi
+
+    mkdir -p "$FLOW_DIR"
+    chown -R "$SERVICE_USER:$SERVICE_GROUP" "$FLOW_DIR"
+    chmod 0750 "$FLOW_DIR"
+}
+
+tune_kernel() {
+    info "Aplicando tuning de buffer UDP..."
+
+    cat > /etc/sysctl.d/90-ipfix-collector.conf <<EOF
+# Amoreiratech IPFIX Collector - Debian 12
+net.core.rmem_default = 16777216
+net.core.rmem_max = 33554432
+net.core.netdev_max_backlog = 10000
+EOF
+
+    sysctl --system >/dev/null
+}
+
+disable_default_nfdump_services() {
+    info "Desabilitando services padrao que possam conflitar..."
+
+    systemctl disable --now nfdump.service >/dev/null 2>&1 || true
+    systemctl disable --now nfdump@.service >/dev/null 2>&1 || true
+    systemctl disable --now nfcapd.service >/dev/null 2>&1 || true
+}
+
+create_systemd_service() {
+    info "Criando servico systemd ipfix-collector..."
+
+    cat > /etc/systemd/system/ipfix-collector.service <<EOF
+[Unit]
+Description=Amoreiratech IPFIX Flow Collector (nfcapd)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_GROUP}
+
+ExecStart=/usr/bin/nfcapd \
+    -M ${FLOW_DIR} \
+    -p ${IPFIX_PORT} \
+    -b ${BIND_IP} \
+    -S ${SUBDIR_LEVEL} \
+    -t ${ROTATE_SECONDS} \
+    -z \
+    -T all \
+    -B ${SOCKET_BUFFER}
+
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=${FLOW_DIR}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable ipfix-collector.service
+}
+
+create_cleanup_script() {
+    info "Criando rotina de retencao e protecao de disco..."
+
+    cat > /usr/local/sbin/ipfix-cleanup <<EOF
+#!/bin/bash
+set -euo pipefail
+
+FLOW_DIR="${FLOW_DIR}"
+RETENTION_DAYS=${RETENTION_DAYS}
+DISK_WARNING=${DISK_WARNING}
+DISK_CLEAN=${DISK_CLEAN}
+DISK_TARGET=${DISK_TARGET}
+DISK_CRITICAL=${DISK_CRITICAL}
+
+log() {
+    logger -t IPFIX-CLEANUP -- "\$*"
+}
+
+usage_pct() {
+    df -P "\$FLOW_DIR" | awk 'NR==2 {gsub("%","",\$5); print \$5}'
+}
+
+# Retencao normal:
+# remove apenas flow-files fechados.
+find "\$FLOW_DIR" \
+    -type f \
+    -name 'nfcapd.*' \
+    ! -name 'nfcapd.current*' \
+    -mtime "+\$RETENTION_DAYS" \
+    -delete 2>/dev/null || true
+
+USAGE="\$(usage_pct)"
+
+if [ "\$USAGE" -ge "\$DISK_WARNING" ]; then
+    log "WARNING: filesystem IPFIX em \${USAGE}%."
+fi
+
+if [ "\$USAGE" -ge "\$DISK_CLEAN" ]; then
+    log "LIMPEZA: uso em \${USAGE}%. Removendo flow-files mais antigos ate \${DISK_TARGET}%."
+
+    while [ "\$(usage_pct)" -gt "\$DISK_TARGET" ]; do
+        OLDEST="\$(
+            find "\$FLOW_DIR" \
+                -type f \
+                -name 'nfcapd.*' \
+                ! -name 'nfcapd.current*' \
+                -printf '%T@ %p\n' 2>/dev/null |
+            sort -n |
+            head -n 1 |
+            cut -d' ' -f2-
+        )"
+
+        [ -n "\$OLDEST" ] || break
+
+        rm -f -- "\$OLDEST"
+        log "Removido flow-file antigo: \$OLDEST"
+    done
+fi
+
+USAGE="\$(usage_pct)"
+
+if [ "\$USAGE" -ge "\$DISK_CRITICAL" ]; then
+    log "CRITICAL: filesystem IPFIX permanece em \${USAGE}%."
+fi
+
+find "\$FLOW_DIR" -type d -empty -delete 2>/dev/null || true
+EOF
+
+    chmod 0750 /usr/local/sbin/ipfix-cleanup
+
+    cat > /etc/cron.d/ipfix-cleanup <<EOF
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+${CLEANUP_CRON} root /usr/local/sbin/ipfix-cleanup
+EOF
+
+    chmod 0644 /etc/cron.d/ipfix-cleanup
+}
+
+create_status_tool() {
+    info "Criando utilitarios de administracao..."
+
+    cat > /usr/local/bin/ipfix-status <<EOF
+#!/bin/bash
+
+FLOW_DIR="${FLOW_DIR}"
+PORT="${IPFIX_PORT}"
+
+echo "============================================================"
+echo "  AMOREIRATECH - IPFIX FLOW COLLECTOR - DEBIAN 12"
+echo "============================================================"
+echo
+echo "[SERVICO]"
+systemctl --no-pager --full status ipfix-collector.service | head -20 || true
+
+echo
+echo "[PORTA UDP]"
+ss -lunp | grep ":\${PORT}" || echo "Porta \${PORT}/UDP nao encontrada."
+
+echo
+echo "[FILESYSTEM]"
+df -h "\$FLOW_DIR"
+
+echo
+echo "[ESPACO UTILIZADO PELOS FLOWS]"
+du -sh "\$FLOW_DIR" 2>/dev/null || true
+
+echo
+echo "[EXPORTADORES DETECTADOS]"
+find "\$FLOW_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort || true
+
+echo
+echo "[ULTIMOS FLOW-FILES]"
+find "\$FLOW_DIR" \
+    -type f \
+    -name 'nfcapd.*' \
+    ! -name 'nfcapd.current*' \
+    -printf '%TY-%Tm-%Td %TH:%TM  %s bytes  %p\n' 2>/dev/null |
+sort -r |
+head -20 || true
+
+echo
+echo "[ULTIMAS MENSAGENS]"
+journalctl -u ipfix-collector.service -n 15 --no-pager || true
+
+echo
+echo "============================================================"
+EOF
+
+    chmod 0755 /usr/local/bin/ipfix-status
+
+    cat > /usr/local/bin/ipfix-last <<EOF
+#!/bin/bash
+set -euo pipefail
+
+FLOW_DIR="${FLOW_DIR}"
+COUNT="\${1:-50}"
+
+LATEST="\$(
+    find "\$FLOW_DIR" \
+        -type f \
+        -name 'nfcapd.*' \
+        ! -name 'nfcapd.current*' \
+        -printf '%T@ %p\n' 2>/dev/null |
+    sort -nr |
+    head -n 1 |
+    cut -d' ' -f2-
+)"
+
+if [ -z "\$LATEST" ]; then
+    echo "Nenhum flow-file fechado encontrado em \$FLOW_DIR."
+    exit 1
+fi
+
+echo "Arquivo: \$LATEST"
+echo
+
+/usr/bin/nfdump -r "\$LATEST" -o extended -n "\$COUNT"
+EOF
+
+    chmod 0755 /usr/local/bin/ipfix-last
+}
+
+create_readme() {
+    cat > /root/IPFIX-README-DEBIAN12.txt <<EOF
+AMOREIRATECH - IPFIX FLOW COLLECTOR - DEBIAN 12
+================================================
+
+Collector:
+  Porta UDP: ${IPFIX_PORT}
+  Diretorio: ${FLOW_DIR}
+  Rotacao: ${ROTATE_SECONDS} segundos
+  Retencao local: ${RETENTION_DAYS} dias
+  Formato: nfdump binario + LZO
+  Hierarquia: exportador/ano/mes/dia/hora
+
+Comandos:
+  ipfix-status
+  ipfix-last
+  ipfix-last 100
+  journalctl -u ipfix-collector -f
+  ss -lunp | grep :${IPFIX_PORT}
+  tcpdump -ni any udp port ${IPFIX_PORT}
+
+Consulta manual:
+  nfdump -r /caminho/do/nfcapd.ARQUIVO -o extended
+
+MikroTik RouterOS v7:
+  /ip traffic-flow set enabled=yes
+  /ip traffic-flow target add dst-address=IP_DO_COLLECTOR port=${IPFIX_PORT} version=ipfix
+
+IMPORTANTE:
+  Restrinja UDP/${IPFIX_PORT} no firewall para os IPs autorizados.
+EOF
+}
+
+start_and_validate() {
+    info "Iniciando collector..."
+
+    systemctl restart ipfix-collector.service
+
+    sleep 2
+
+    if ! systemctl is-active --quiet ipfix-collector.service; then
+        journalctl -u ipfix-collector.service -n 50 --no-pager || true
+        die "O servico ipfix-collector nao iniciou."
+    fi
+
+    if ! ss -lun | grep -q ":${IPFIX_PORT} "; then
+        warn "Servico ativo, mas a porta ${IPFIX_PORT}/UDP nao apareceu no teste."
+    fi
+}
+
+final_message() {
+    echo
+    echo "================================================================"
+    echo " AMOREIRATECH IPFIX FLOW COLLECTOR - DEBIAN 12 INSTALADO"
+    echo "================================================================"
+    echo
+    echo "Porta             : UDP ${IPFIX_PORT}"
+    echo "Diretorio         : ${FLOW_DIR}"
+    echo "Formato           : nfdump binario + LZO"
+    echo "Rotacao           : ${ROTATE_SECONDS}s"
+    echo "Retencao local    : ${RETENTION_DAYS} dias"
+    echo "Warning disco     : ${DISK_WARNING}%"
+    echo "Limpeza disco     : ${DISK_CLEAN}% -> alvo ${DISK_TARGET}%"
+    echo "Critico           : ${DISK_CRITICAL}%"
+    echo
+    echo "Status             : ipfix-status"
+    echo "Ultimos flows      : ipfix-last"
+    echo "README             : /root/IPFIX-README-DEBIAN12.txt"
+    echo
+    echo "Restrinja UDP/${IPFIX_PORT} aos seus exportadores."
+    echo "================================================================"
+}
+
+main() {
+    require_root
+    check_os
+    install_packages
+    create_user_and_dirs
+    tune_kernel
+    disable_default_nfdump_services
+    create_systemd_service
+    create_cleanup_script
+    create_status_tool
+    create_readme
+    start_and_validate
+    final_message
+}
+
+main "$@"
